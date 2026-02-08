@@ -1,4 +1,3 @@
-
 -- global variables
 LastTime = nil
 ProjectName = "Untitled"
@@ -66,22 +65,42 @@ local function getWakatimeCliPath()
     end
 end
 
+local function GetProjectName()
+    if ProjectName ~= "Untitled" and ProjectName ~= nil and ProjectName ~= "" then
+        return ProjectName
+    end
+
+    if isSpriteValid() then
+        local filename = Sprite.filename
+        if filename and filename ~= "" then
+            -- get parent folder name
+            local pattern = app.fs.pathSeparator == "\\" and "(.*)\\(.*)\\(.*)" or "(.*)/(.*)/(.*)"
+            local path = app.fs.filePath(filename)
+            local folder = app.fs.fileName(path)
+            if folder and folder ~= "" then
+                return folder
+            end
+        end
+    end
+    return "Untitled"
+end
+
 local function updateSprite(bypass_timer, is_write)
     if isSpriteValid() and (not LastTime or LastTime < os.time() - 120 or bypass_timer) then
-
         -- create the heartbeat
 
         if Sprite.filename == "" or Sprite.filename == nil then
             -- spawn dialog saying that they need to save the file or that tracking won't work
 
-            app.alert("you need to save this sprite as a file for wakatime to track it.")
+            -- app.alert("you need to save this sprite as a file for wakatime to track it.")
+            -- alerting here causes spam/locking if user hasn't saved yet, better to just return or log silently
             return
         end
 
         local heartbeat = newHeartbeat({
             entity = Sprite.filename,
             time = os.time(),
-            project = ProjectName,
+            project = GetProjectName(),
             lineno = GetCurrentLine(),
             cursorpos = GetCursorPos(),
             lines_in_file = GetSpriteHeight(),
@@ -105,12 +124,12 @@ end
 function SendHeartbeat(heartbeat)
     local wakatimeCliPath = getWakatimeCliPath()
     if not wakatimeCliPath then
-        app.alert("Wakatime CLI not found. Please ensure it is installed in the .wakatime folder.")
+        -- app.alert("Wakatime CLI not found. Please ensure it is installed in the .wakatime folder.")
         return
     end
 
     local cmd = string.format(
-        '"%s" --language Aseprite --category designing --plugin "%s" --time %d --project "%s" --lineno %d --lines-in-file %d --entity "%s"',
+        '"%s" --language Aseprite --category designing --plugin "%s" --time %d --project "%s" --lineno %d --lines-in_file %d --entity "%s"',
         wakatimeCliPath,
         heartbeat.plugin,
         heartbeat.time,
@@ -132,7 +151,8 @@ function SendHeartbeat(heartbeat)
 end
 
 function ExecuteOnWindows(cmd)
-    io.popen('start "" cmd /c "' .. cmd .. '"')
+    -- Use start /B for background execution (no window)
+    os.execute('start /B "" ' .. cmd)
 end
 
 local function registerSprite()
@@ -204,7 +224,7 @@ function SetProjectName(plugin)
     end
     dlg:entry({
         id = "projectName",
-        label = "Wakatime project name",
+        label = "Wakatime project name (leave empty for auto)",
         text = ProjectName,
     })
     dlg:button({
@@ -212,15 +232,11 @@ function SetProjectName(plugin)
         text = "OK",
         onclick = function()
             local newName = dlg.data.projectName
-            if newName ~= "" then
-                ProjectName = newName
-                if plugin then
-                    plugin.preferences.projectName = ProjectName
-                end
-                dlg:close()
-            else
-                app.alert("Project name cannot be empty.")
+            ProjectName = newName -- allow empty to mean "auto"
+            if plugin then
+                plugin.preferences.projectName = ProjectName
             end
+            dlg:close()
         end,
     })
     dlg:button({
@@ -234,38 +250,26 @@ function SetProjectName(plugin)
 end
 
 function GetModTime(path)
-    local handle, result
-    if package.config:sub(1,1) == "\\" then
-        -- Windows
-        handle = io.popen('powershell -Command "(Get-Item \'' .. path .. '\').LastWriteTimeUtc.ToUnixTimeSeconds()"')
-        if not handle then
-            return nil
+    -- Try native app.fs first (newer Aseprite versions)
+    if app.fs and app.fs.attributes then
+        local attr = app.fs.attributes(path)
+        if attr then
+            return attr.modification
         end
-        result = handle:read("*n")
-    elseif package.config:sub(1,1) == "/" then
-        -- macOS or Linux
-        -- check OS
-        local os_name = app.os.name or "Unknown"
-
-        if os_name == "macOS" then
-            handle = io.popen('stat -f %m \'' .. path .. '\'')
-        else
-            -- assume Linux
-            handle = io.popen('stat -c %Y \'' .. path .. '\'')
-        end
-        if not handle then
-            return nil
-        end
-        result = handle:read("*n")
-    else
-        -- unknown OS
-        return nil
     end
 
-    if handle then
-        handle:close()
+    -- Fallback to lfs if available
+    local lfs = pcall(require, "lfs") and require("lfs") or nil
+    if lfs then
+        local attr = lfs.attributes(path)
+        if attr then
+            return attr.modification
+        end
     end
-    return result
+
+    -- Last resort: if we can't get mod time efficiently, return nil
+    -- DO NOT spawn PowerShell here as it causes freezing
+    return nil
 end
 
 function CheckForSave()
@@ -284,7 +288,6 @@ function CheckForSave()
         updateSprite(true, true)
     end
 end
-
 
 function UpdateSpriteHelper()
     updateSprite(false, false)
